@@ -1,0 +1,230 @@
+# OpenAPI Patch: Partial Fulfilment
+# These entries are ADDED TO / REPLACE entries in backend/openapi.yaml
+# during implementation.
+#
+# REMOVED endpoint (from feature 001):
+#   POST /purchase-orders/{id}/fulfil
+#
+# ADDED endpoints:
+#   POST /purchase-orders/{id}/line-items/{lineItemId}/shipments
+#   GET  /purchase-orders/{id}/fulfilment-history
+#
+# MODIFIED schema:
+#   PurchaseOrderStatus enum gains 'partially-fulfilled'
+
+openapi: 3.0.3
+info:
+  title: Partial Fulfilment — OpenAPI Patch
+  version: 1.0.0
+
+paths:
+
+  /purchase-orders/{id}/line-items/{lineItemId}/shipments:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+      - name: lineItemId
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Record a partial shipment against a line item
+      description: >
+        Supplier role required. Records a shipment quantity against the specified
+        line item on an Approved or Partially Fulfilled PO. Automatically transitions
+        the PO to Partially Fulfilled or Fulfilled based on cumulative progress.
+        Over-delivery (cumulative > ordered qty) is rejected.
+      operationId: recordShipment
+      tags: [line-items]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordShipmentRequest'
+      responses:
+        '201':
+          description: Shipment recorded; returns updated PO detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /purchase-orders/{id}/fulfilment-history:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    get:
+      summary: Get the fulfilment history for a purchase order
+      description: >
+        Returns all shipment events for the PO in chronological order.
+        Accessible to the PO's buyer, any approver, and the PO's assigned supplier.
+      operationId: getFulfilmentHistory
+      tags: [purchase-orders]
+      responses:
+        '200':
+          description: Chronological list of fulfilment records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [records]
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FulfilmentRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+
+  parameters:
+    PurchaseOrderId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  schemas:
+
+    # Replace PurchaseOrderStatus enum in openapi.yaml with this version
+    PurchaseOrderStatus:
+      type: string
+      enum: [draft, submitted, approved, partially-fulfilled, fulfilled, cancelled]
+
+    RecordShipmentRequest:
+      type: object
+      required: [quantityFulfilled]
+      properties:
+        quantityFulfilled:
+          type: integer
+          minimum: 1
+          description: Number of units shipped in this delivery
+        shipmentReference:
+          type: string
+          description: >
+            Optional free-text reference (e.g., tracking number, delivery note).
+            Not validated for uniqueness.
+
+    FulfilmentRecord:
+      type: object
+      required: [id, purchaseOrderId, lineItemId, quantityFulfilled, cumulativeQty, actorUserId, createdAt]
+      properties:
+        id:
+          type: integer
+        purchaseOrderId:
+          type: integer
+        lineItemId:
+          type: integer
+        quantityFulfilled:
+          type: integer
+        cumulativeQty:
+          type: integer
+          description: Total quantity fulfilled for this line item after this record
+        shipmentReference:
+          type: string
+          nullable: true
+        actorUserId:
+          type: integer
+        actorUserName:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    # LineItem is extended in responses to include fulfilment progress
+    LineItemWithProgress:
+      type: object
+      required: [id, productId, quantity, unitPrice, lineTotal, fulfilledQty, outstandingQty]
+      properties:
+        id:
+          type: integer
+        productId:
+          type: integer
+        productName:
+          type: string
+          nullable: true
+        quantity:
+          type: integer
+        unitPrice:
+          type: number
+        lineTotal:
+          type: number
+        fulfilledQty:
+          type: integer
+          description: Sum of all shipment quantities recorded for this line item
+        outstandingQty:
+          type: integer
+          description: quantity minus fulfilledQty
+
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: string
+              details:
+                type: array
+                items:
+                  type: string
+    Unauthorized:
+      description: Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: string
+    Forbidden:
+      description: Insufficient role or ownership for this action
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: string
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: string
+    Conflict:
+      description: Action not permitted in the current PO status, or over-delivery
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: string

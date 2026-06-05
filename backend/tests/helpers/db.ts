@@ -14,6 +14,7 @@ export function createTestDb(): Db {
 
 export function cleanDb(db: Db): void {
   db.exec(`
+    DELETE FROM fulfilment_records;
     DELETE FROM notifications;
     DELETE FROM po_audit_entries;
     DELETE FROM po_line_items;

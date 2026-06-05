@@ -5,6 +5,7 @@ import { PurchaseOrderRepository } from './repositories/purchase-order.repositor
 import { LineItemRepository } from './repositories/line-item.repository';
 import { AuditRepository } from './repositories/audit.repository';
 import { NotificationRepository } from './repositories/notification.repository';
+import { FulfilmentRepository } from './repositories/fulfilment.repository';
 import { NotificationService } from './services/notification.service';
 import { PurchaseOrderService } from './services/purchase-order.service';
 import { createApp } from './api/app';
@@ -20,8 +21,9 @@ const poRepo = new PurchaseOrderRepository(db);
 const liRepo = new LineItemRepository(db);
 const auditRepo = new AuditRepository(db);
 const notifRepo = new NotificationRepository(db);
+const fulfilRepo = new FulfilmentRepository(db);
 const notifService = new NotificationService(notifRepo);
-const poService = new PurchaseOrderService(poRepo, liRepo, auditRepo, notifService);
+const poService = new PurchaseOrderService(poRepo, liRepo, auditRepo, notifService, fulfilRepo);
 
 const app = createApp(poService);
 

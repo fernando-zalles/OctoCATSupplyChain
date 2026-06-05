@@ -1,35 +1,50 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { api, type PurchaseOrderDetail, type AuditEntry } from '../services/api';
+import { api, type PurchaseOrderDetail, type AuditEntry, type FulfilmentRecord } from '../services/api';
+
+interface ShipmentForm {
+  lineItemId: number;
+  qty: string;
+  ref: string;
+}
 
 export function PurchaseOrderDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { token, user, hasRole } = useAuth();
   const [po, setPo] = useState<PurchaseOrderDetail | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [history, setHistory] = useState<FulfilmentRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [loading, setLoading] = useState(false);
+  const [shipmentForm, setShipmentForm] = useState<ShipmentForm | null>(null);
 
   const poId = parseInt(id ?? '0');
 
-  useEffect(() => {
+  const refresh = async () => {
     if (!token || !poId) return;
+    const [p, a, h] = await Promise.all([
+      api.getPO(token, poId),
+      api.getAuditTrail(token, poId),
+      api.getFulfilmentHistory(token, poId),
+    ]);
+    setPo(p);
+    setAudit(a.entries);
+    setHistory(h.records);
+  };
+
+  useEffect(() => {
     setLoading(true);
-    Promise.all([api.getPO(token, poId), api.getAuditTrail(token, poId)])
-      .then(([p, a]) => { setPo(p); setAudit(a.entries); })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
+    refresh().catch((err: Error) => setError(err.message)).finally(() => setLoading(false));
   }, [token, poId]);
 
   const doAction = async (action: () => Promise<PurchaseOrderDetail>) => {
     try {
-      const updated = await action();
-      setPo(updated);
-      const a = await api.getAuditTrail(token!, poId);
-      setAudit(a.entries);
+      await action();
+      await refresh();
       setReason('');
+      setShipmentForm(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed');
     }
@@ -41,12 +56,15 @@ export function PurchaseOrderDetailPage() {
 
   const isCreator = po.createdByUserId === user?.userId;
   const canApprove = hasRole('approver') && !isCreator && po.status === 'submitted';
-  const canFulfil = hasRole('supplier') && po.status === 'approved';
+  const canRecordShipment = hasRole('supplier') && (po.status === 'approved' || po.status === 'partially-fulfilled');
   const canBuyerCancel = hasRole('buyer') && isCreator && ['draft', 'submitted'].includes(po.status);
-  const canApproverCancel = hasRole('approver') && ['draft', 'submitted', 'approved'].includes(po.status);
+  const canApproverCancel = hasRole('approver') && ['draft', 'submitted', 'approved', 'partially-fulfilled'].includes(po.status);
+
+  const getFulfilledQty = (lineItemId: number) =>
+    history.filter((r) => r.lineItemId === lineItemId).reduce((s, r) => s + r.quantityFulfilled, 0);
 
   return (
-    <div style={{ padding: '1rem', maxWidth: 800 }}>
+    <div style={{ padding: '1rem', maxWidth: 860 }}>
       <Link to="/purchase-orders">← Back</Link>
       <h1>Purchase Order #{po.id}</h1>
 
@@ -62,19 +80,81 @@ export function PurchaseOrderDetailPage() {
       <section>
         <h2>Line Items</h2>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead><tr><th>Product</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Product</th><th>Ordered</th><th>Fulfilled</th><th>Outstanding</th>
+              <th>Unit Price</th><th>Line Total</th>
+              {canRecordShipment && <th>Shipment</th>}
+            </tr>
+          </thead>
           <tbody>
-            {po.lineItems.map((li) => (
-              <tr key={li.id}>
-                <td>{li.productName ?? li.productId}</td>
-                <td>{li.quantity}</td>
-                <td>${li.unitPrice.toFixed(2)}</td>
-                <td>${li.lineTotal.toFixed(2)}</td>
-              </tr>
-            ))}
+            {po.lineItems.map((li) => {
+              const fulfilled = getFulfilledQty(li.id);
+              const outstanding = li.quantity - fulfilled;
+              return (
+                <tr key={li.id}>
+                  <td>{li.productName ?? li.productId}</td>
+                  <td>{li.quantity}</td>
+                  <td>{fulfilled}</td>
+                  <td style={{ color: outstanding > 0 ? '#e08000' : '#007700' }}>{outstanding}</td>
+                  <td>${li.unitPrice.toFixed(2)}</td>
+                  <td>${li.lineTotal.toFixed(2)}</td>
+                  {canRecordShipment && (
+                    <td>
+                      {outstanding > 0 ? (
+                        <button onClick={() => setShipmentForm({ lineItemId: li.id, qty: '1', ref: '' })}>
+                          Record Shipment
+                        </button>
+                      ) : (
+                        <span style={{ color: '#007700' }}>Complete</span>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </section>
+
+      {/* Shipment recording form */}
+      {canRecordShipment && shipmentForm && (
+        <section style={{ background: '#f0f8ff', padding: '1rem', marginTop: '1rem', borderRadius: 4 }}>
+          <h3>Record Shipment — Line Item #{shipmentForm.lineItemId}</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <label>Qty:
+              <input
+                type="number"
+                min={1}
+                value={shipmentForm.qty}
+                onChange={(e) => setShipmentForm({ ...shipmentForm, qty: e.target.value })}
+                style={{ width: 70, marginLeft: 4 }}
+              />
+            </label>
+            <label>Reference (optional):
+              <input
+                type="text"
+                value={shipmentForm.ref}
+                onChange={(e) => setShipmentForm({ ...shipmentForm, ref: e.target.value })}
+                placeholder="Tracking / delivery note"
+                style={{ marginLeft: 4 }}
+              />
+            </label>
+            <button
+              onClick={() => doAction(() =>
+                api.recordShipment(token!, poId, shipmentForm.lineItemId, {
+                  quantityFulfilled: parseInt(shipmentForm.qty),
+                  shipmentReference: shipmentForm.ref || undefined,
+                })
+              )}
+              disabled={!shipmentForm.qty || parseInt(shipmentForm.qty) < 1}
+            >
+              Confirm Shipment
+            </button>
+            <button onClick={() => setShipmentForm(null)}>Cancel</button>
+          </div>
+        </section>
+      )}
 
       {/* Approval actions */}
       {canApprove && (
@@ -87,13 +167,6 @@ export function PurchaseOrderDetailPage() {
               Reject
             </button>
           </div>
-        </section>
-      )}
-
-      {/* Fulfil action */}
-      {canFulfil && (
-        <section style={{ marginTop: '1rem' }}>
-          <button onClick={() => doAction(() => api.fulfilPO(token!, poId))}>Mark as Fulfilled</button>
         </section>
       )}
 
@@ -110,6 +183,32 @@ export function PurchaseOrderDetailPage() {
           </button>
         </section>
       )}
+
+      {/* Fulfilment history */}
+      <section style={{ marginTop: '2rem' }}>
+        <h2>Fulfilment History</h2>
+        {history.length === 0 ? (
+          <p style={{ color: '#888' }}>No shipments recorded yet.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr><th>Line Item</th><th>Qty Shipped</th><th>Cumulative</th><th>Reference</th><th>By</th><th>When</th></tr>
+            </thead>
+            <tbody>
+              {history.map((r) => (
+                <tr key={r.id}>
+                  <td>#{r.lineItemId}</td>
+                  <td>{r.quantityFulfilled}</td>
+                  <td>{r.cumulativeQty}</td>
+                  <td>{r.shipmentReference ?? '—'}</td>
+                  <td>{r.actorUserName ?? r.actorUserId}</td>
+                  <td>{new Date(r.createdAt).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       {/* Audit trail */}
       <section style={{ marginTop: '2rem' }}>

@@ -145,15 +145,6 @@ export function createPurchaseOrdersRouter(poService: PurchaseOrderService): Rou
     } catch (err) { next(err); }
   });
 
-  // Fulfil
-  router.post('/:id/fulfil', async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const po = await poService.fulfil(parseInt(req.params['id']), req.user!.userId, req.user!.roles);
-      const full = poService.getPOWithLineItems(po.id)!;
-      res.json(toApiPO(full));
-    } catch (err) { next(err); }
-  });
-
   // Cancel
   router.post('/:id/cancel', async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -161,6 +152,37 @@ export function createPurchaseOrdersRouter(poService: PurchaseOrderService): Rou
       const po = await poService.cancel(parseInt(req.params['id']), req.user!.userId, req.user!.roles, reason);
       const full = poService.getPOWithLineItems(po.id)!;
       res.json(toApiPO(full));
+    } catch (err) { next(err); }
+  });
+
+  // Record partial shipment
+  router.post('/:id/line-items/:lineItemId/shipments', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const poId = parseInt(req.params['id']);
+      const lineItemId = parseInt(req.params['lineItemId']);
+      const { quantityFulfilled, shipmentReference } = req.body as { quantityFulfilled: number; shipmentReference?: string };
+      await poService.recordShipment(poId, lineItemId, req.user!.userId, req.user!.roles, { quantityFulfilled, shipmentReference });
+      const full = poService.getPOWithLineItems(poId)!;
+      res.status(201).json(toApiPO(full));
+    } catch (err) { next(err); }
+  });
+
+  // Fulfilment history
+  router.get('/:id/fulfilment-history', (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const records = poService.getFulfilmentHistory(parseInt(req.params['id']));
+      res.json({
+        records: records.map((r) => ({
+          id: r.id,
+          purchaseOrderId: r.purchase_order_id,
+          lineItemId: r.line_item_id,
+          quantityFulfilled: r.quantity_fulfilled,
+          cumulativeQty: r.cumulative_qty,
+          shipmentReference: r.shipment_reference,
+          actorUserId: r.actor_user_id,
+          createdAt: r.created_at,
+        })),
+      });
     } catch (err) { next(err); }
   });
 
