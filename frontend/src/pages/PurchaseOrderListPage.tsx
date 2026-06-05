@@ -7,6 +7,7 @@ const STATUS_COLOURS: Record<POStatus, string> = {
   draft: '#888',
   submitted: '#e08000',
   approved: '#007700',
+  'partially-fulfilled': '#e06000',
   fulfilled: '#004499',
   cancelled: '#cc0000',
 };
@@ -48,6 +49,7 @@ export function PurchaseOrderListPage() {
           <option value="draft">Draft</option>
           <option value="submitted">Submitted</option>
           <option value="approved">Approved</option>
+          <option value="partially-fulfilled">Partially Fulfilled</option>
           <option value="fulfilled">Fulfilled</option>
           <option value="cancelled">Cancelled</option>
         </select>

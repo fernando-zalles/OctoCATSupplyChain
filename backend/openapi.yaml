@@ -35,7 +35,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [draft, submitted, approved, fulfilled, cancelled]
+            enum: [draft, submitted, approved, partially-fulfilled, fulfilled, cancelled]
           description: Filter by status
         - name: supplierId
           in: query
@@ -231,21 +231,38 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /purchase-orders/{id}/fulfil:
+  /purchase-orders/{id}/line-items/{lineItemId}/shipments:
     parameters:
       - $ref: '#/components/parameters/PurchaseOrderId'
+      - name: lineItemId
+        in: path
+        required: true
+        schema:
+          type: integer
     post:
-      summary: Mark an approved purchase order as fulfilled
-      description: Supplier role required.
-      operationId: fulfilPurchaseOrder
-      tags: [purchase-orders]
+      summary: Record a partial shipment against a line item
+      description: >
+        Supplier role required. Records a shipment quantity against the specified
+        line item on an Approved or Partially Fulfilled PO. Automatically transitions
+        the PO to Partially Fulfilled or Fulfilled based on cumulative progress.
+        Over-delivery (cumulative > ordered qty) is rejected with 409.
+      operationId: recordShipment
+      tags: [line-items]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordShipmentRequest'
       responses:
-        '200':
-          description: PO fulfilled
+        '201':
+          description: Shipment recorded; returns updated PO detail
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -254,6 +271,36 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+
+  /purchase-orders/{id}/fulfilment-history:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    get:
+      summary: Get the fulfilment history for a purchase order
+      description: >
+        Returns all shipment events in chronological order.
+        Accessible to the PO's buyer, any approver, and the PO's assigned supplier.
+      operationId: getFulfilmentHistory
+      tags: [purchase-orders]
+      responses:
+        '200':
+          description: Chronological list of fulfilment records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [records]
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FulfilmentRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /purchase-orders/{id}/cancel:
     parameters:
@@ -424,7 +471,7 @@ components:
 
     PurchaseOrderStatus:
       type: string
-      enum: [draft, submitted, approved, fulfilled, cancelled]
+      enum: [draft, submitted, approved, partially-fulfilled, fulfilled, cancelled]
 
     LineItem:
       type: object
@@ -570,10 +617,47 @@ components:
         fromStatus:
           type: string
           nullable: true
-          enum: [draft, submitted, approved, fulfilled, cancelled]
+          enum: [draft, submitted, approved, partially-fulfilled, fulfilled, cancelled]
         toStatus:
           $ref: '#/components/schemas/PurchaseOrderStatus'
         reason:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    RecordShipmentRequest:
+      type: object
+      required: [quantityFulfilled]
+      properties:
+        quantityFulfilled:
+          type: integer
+          minimum: 1
+        shipmentReference:
+          type: string
+          nullable: true
+
+    FulfilmentRecord:
+      type: object
+      required: [id, purchaseOrderId, lineItemId, quantityFulfilled, cumulativeQty, actorUserId, createdAt]
+      properties:
+        id:
+          type: integer
+        purchaseOrderId:
+          type: integer
+        lineItemId:
+          type: integer
+        quantityFulfilled:
+          type: integer
+        cumulativeQty:
+          type: integer
+        shipmentReference:
+          type: string
+          nullable: true
+        actorUserId:
+          type: integer
+        actorUserName:
           type: string
           nullable: true
         createdAt:

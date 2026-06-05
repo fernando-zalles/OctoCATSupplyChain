@@ -2,7 +2,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001/api
 
 // ─── Shared types ─────────────────────────────────────────────────────────────
 
-export type POStatus = 'draft' | 'submitted' | 'approved' | 'fulfilled' | 'cancelled';
+export type POStatus = 'draft' | 'submitted' | 'approved' | 'partially-fulfilled' | 'fulfilled' | 'cancelled';
 
 export interface LineItem {
   id: number;
@@ -51,6 +51,18 @@ export interface AuditEntry {
   fromStatus: POStatus | null;
   toStatus: POStatus;
   reason: string | null;
+  createdAt: string;
+}
+
+export interface FulfilmentRecord {
+  id: number;
+  purchaseOrderId: number;
+  lineItemId: number;
+  quantityFulfilled: number;
+  cumulativeQty: number;
+  shipmentReference: string | null;
+  actorUserId: number;
+  actorUserName?: string;
   createdAt: string;
 }
 
@@ -133,8 +145,15 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
 
-  fulfilPO: (token: string, id: number) =>
-    request<PurchaseOrderDetail>(`/purchase-orders/${id}/fulfil`, { method: 'POST', token }),
+  recordShipment: (token: string, poId: number, lineItemId: number, input: { quantityFulfilled: number; shipmentReference?: string }) =>
+    request<PurchaseOrderDetail>(`/purchase-orders/${poId}/line-items/${lineItemId}/shipments`, {
+      method: 'POST',
+      token,
+      body: JSON.stringify({ quantityFulfilled: input.quantityFulfilled, shipmentReference: input.shipmentReference }),
+    }),
+
+  getFulfilmentHistory: (token: string, poId: number) =>
+    request<{ records: FulfilmentRecord[] }>(`/purchase-orders/${poId}/fulfilment-history`, { method: 'GET', token }),
 
   cancelPO: (token: string, id: number, reason: string) =>
     request<PurchaseOrderDetail>(`/purchase-orders/${id}/cancel`, {

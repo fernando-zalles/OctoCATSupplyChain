@@ -5,6 +5,7 @@ import {
 } from '../repositories/purchase-order.repository';
 import { LineItemRepository, type LineItem, type LineItemInput } from '../repositories/line-item.repository';
 import { AuditRepository } from '../repositories/audit.repository';
+import { FulfilmentRepository, type FulfilmentRecord } from '../repositories/fulfilment.repository';
 import { NotificationService } from './notification.service';
 import {
   validateSubmission,
@@ -13,6 +14,7 @@ import {
   canCancel,
 } from '../lib/purchase-orders/po.lib';
 import { assertCanApprove } from '../lib/approval/approval.lib';
+import { validateShipment, computePOStatus, canRecordShipment } from '../lib/partial-fulfilment/fulfilment.lib';
 import { ConflictError, NotFoundError, ValidationError, AuthError } from '../api/middleware/error';
 
 export interface CreatePOInput {
@@ -33,6 +35,7 @@ export class PurchaseOrderService {
     private liRepo: LineItemRepository,
     private auditRepo: AuditRepository,
     private notifService: NotificationService,
+    private fulfilRepo?: FulfilmentRepository,
   ) {}
 
   create(input: CreatePOInput): PurchaseOrder {
@@ -191,18 +194,6 @@ export class PurchaseOrderService {
     return updated;
   }
 
-  async fulfil(poId: number, actorUserId: number, actorRoles: string[], actorSupplierId?: number): Promise<PurchaseOrder> {
-    const po = this.poRepo.findById(poId);
-    if (!po) throw new NotFoundError(`PO ${poId} not found`);
-    if (!actorRoles.includes('supplier')) throw new AuthError('Supplier role required to fulfil a PO');
-    if (po.status !== 'approved') throw new ConflictError(`Cannot fulfil a PO in status: ${po.status}`);
-
-    const now = new Date().toISOString();
-    const updated = this.poRepo.updateStatus({ id: poId, status: 'fulfilled', actorUserId, fulfilledAt: now });
-    this.auditRepo.append({ purchase_order_id: poId, actor_user_id: actorUserId, from_status: 'approved', to_status: 'fulfilled' });
-    return updated;
-  }
-
   async cancel(poId: number, actorUserId: number, actorRoles: string[], reason: string): Promise<PurchaseOrder> {
     const po = this.poRepo.findById(poId);
     if (!po) throw new NotFoundError(`PO ${poId} not found`);
@@ -230,6 +221,74 @@ export class PurchaseOrderService {
     this.auditRepo.append({ purchase_order_id: poId, actor_user_id: actorUserId, from_status: po.status, to_status: 'cancelled', reason });
     await this.notifService.dispatch(poId, 'supplier', po.supplier_id, 'cancelled');
     return updated;
+  }
+
+  async recordShipment(
+    poId: number,
+    lineItemId: number,
+    actorUserId: number,
+    actorRoles: string[],
+    input: { quantityFulfilled: number; shipmentReference?: string },
+  ): Promise<PurchaseOrder> {
+    if (!this.fulfilRepo) throw new Error('FulfilmentRepository not injected');
+    if (!actorRoles.includes('supplier')) throw new AuthError('Supplier role required to record a shipment');
+
+    const po = this.poRepo.findById(poId);
+    if (!po) throw new NotFoundError(`PO ${poId} not found`);
+    if (!canRecordShipment(po.status)) {
+      throw new ConflictError(`Cannot record a shipment on a PO in status: ${po.status}`);
+    }
+
+    const lineItem = this.liRepo.findById(lineItemId);
+    if (!lineItem || lineItem.purchase_order_id !== poId) {
+      throw new NotFoundError(`Line item ${lineItemId} not found on PO ${poId}`);
+    }
+
+    const currentCumulative = this.fulfilRepo.getCumulativeForLineItem(lineItemId);
+    validateShipment(currentCumulative, input.quantityFulfilled, lineItem.quantity);
+
+    const newCumulative = currentCumulative + input.quantityFulfilled;
+    this.fulfilRepo.record({
+      purchase_order_id: poId,
+      line_item_id: lineItemId,
+      quantity_fulfilled: input.quantityFulfilled,
+      cumulative_qty: newCumulative,
+      shipment_reference: input.shipmentReference,
+      actor_user_id: actorUserId,
+    });
+
+    // Recompute PO status across all line items
+    const allLineItems = this.liRepo.findByPO(poId);
+    const itemsWithProgress = allLineItems.map((li) => ({
+      quantity: li.quantity,
+      fulfilledQty: this.fulfilRepo!.getCumulativeForLineItem(li.id),
+    }));
+    const newStatus = computePOStatus(itemsWithProgress);
+    const fromStatus = po.status;
+
+    const now = new Date().toISOString();
+    const updated = this.poRepo.updateStatus({
+      id: poId,
+      status: newStatus,
+      actorUserId,
+      fulfilledAt: newStatus === 'fulfilled' ? now : undefined,
+    });
+
+    this.auditRepo.append({
+      purchase_order_id: poId,
+      actor_user_id: actorUserId,
+      from_status: fromStatus,
+      to_status: newStatus,
+    });
+
+    return updated;
+  }
+
+  getFulfilmentHistory(poId: number): FulfilmentRecord[] {
+    if (!this.fulfilRepo) throw new Error('FulfilmentRepository not injected');
+    const po = this.poRepo.findById(poId);
+    if (!po) throw new NotFoundError(`PO ${poId} not found`);
+    return this.fulfilRepo.findByPO(poId);
   }
 
   getAuditTrail(poId: number) {

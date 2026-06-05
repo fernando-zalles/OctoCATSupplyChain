@@ -12,7 +12,7 @@ import { PurchaseOrderService } from '../../src/services/purchase-order.service'
 import { NotificationService } from '../../src/services/notification.service';
 
 const BUYER_TOKEN = 'eyJhbGciOiJub25lIn0.eyJ1c2VySWQiOjEsInJvbGVzIjpbImJ1eWVyIl0sImJyYW5jaElkIjoxfQ.';
-const APPROVER_TOKEN = 'eyJhbGciOiJub25lIn0.eyJ1c2VySWQiOjIsInJvbGVzIjpbImFwcHJvdmVyIl0sImJyYW5jaElkIjpudWxsfQ.';
+const SUPPLIER_TOKEN = 'eyJhbGciOiJub25lIn0.eyJ1c2VySWQiOjMsInJvbGVzIjpbInN1cHBsaWVyIl0sImJyYW5jaElkIjpudWxsfQ.';
 
 let db: Db;
 let app: ReturnType<typeof createApp>;
@@ -37,60 +37,49 @@ afterEach(() => {
   db.close();
 });
 
-describe('POST /api/v1/purchase-orders/:id/cancel', () => {
-  it('buyer can cancel their own Draft PO', async () => {
+describe('GET /api/v1/purchase-orders/:id/fulfilment-history', () => {
+  it('returns empty records array for a PO with no shipments', async () => {
     const po = poRepo.create({ branch_id: 1, supplier_id: 10, created_by_user_id: 1 });
+    liRepo.add(po.id, { product_id: 1, quantity: 5, unit_price: 50 });
+    await poService.submit(po.id, 1);
+
     const res = await request(app)
-      .post(`/api/v1/purchase-orders/${po.id}/cancel`)
-      .set('Authorization', `Bearer ${BUYER_TOKEN}`)
-      .send({ reason: 'No longer needed' });
+      .get(`/api/v1/purchase-orders/${po.id}/fulfilment-history`)
+      .set('Authorization', `Bearer ${BUYER_TOKEN}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe('cancelled');
-    expect(res.body.cancellationReason).toBe('No longer needed');
+    expect(res.body.records).toEqual([]);
   });
 
-  it('buyer cannot cancel an Approved PO', async () => {
+  it('returns records in chronological order', async () => {
     const po = poRepo.create({ branch_id: 1, supplier_id: 10, created_by_user_id: 1 });
-    liRepo.add(po.id, { product_id: 1, quantity: 1, unit_price: 100 });
-    await poService.submit(po.id, 1); // auto-approves
-    const res = await request(app)
-      .post(`/api/v1/purchase-orders/${po.id}/cancel`)
-      .set('Authorization', `Bearer ${BUYER_TOKEN}`)
-      .send({ reason: 'Changed mind' });
-    expect(res.status).toBe(409);
-  });
-
-  it('approver can cancel an Approved PO', async () => {
-    const po = poRepo.create({ branch_id: 1, supplier_id: 10, created_by_user_id: 1 });
-    liRepo.add(po.id, { product_id: 1, quantity: 1, unit_price: 100 });
+    const li = liRepo.add(po.id, { product_id: 1, quantity: 10, unit_price: 50 });
     await poService.submit(po.id, 1);
+
+    await poService.recordShipment(po.id, li.id, 3, ['supplier'], { quantityFulfilled: 3, shipmentReference: 'T1' });
+    await poService.recordShipment(po.id, li.id, 3, ['supplier'], { quantityFulfilled: 4, shipmentReference: 'T2' });
+
     const res = await request(app)
-      .post(`/api/v1/purchase-orders/${po.id}/cancel`)
-      .set('Authorization', `Bearer ${APPROVER_TOKEN}`)
-      .send({ reason: 'Supplier issue' });
+      .get(`/api/v1/purchase-orders/${po.id}/fulfilment-history`)
+      .set('Authorization', `Bearer ${BUYER_TOKEN}`);
+
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe('cancelled');
+    expect(res.body.records).toHaveLength(2);
+    expect(res.body.records[0].quantityFulfilled).toBe(3);
+    expect(res.body.records[0].cumulativeQty).toBe(3);
+    expect(res.body.records[1].quantityFulfilled).toBe(4);
+    expect(res.body.records[1].cumulativeQty).toBe(7);
   });
 
-  it('returns 409 when cancelling a Fulfilled PO', async () => {
+  it('is accessible to the supplier', async () => {
     const po = poRepo.create({ branch_id: 1, supplier_id: 10, created_by_user_id: 1 });
-    const li = liRepo.add(po.id, { product_id: 1, quantity: 1, unit_price: 100 });
+    liRepo.add(po.id, { product_id: 1, quantity: 5, unit_price: 50 });
     await poService.submit(po.id, 1);
-    await poService.recordShipment(po.id, li.id, 3, ['supplier'], { quantityFulfilled: 1 });
-    const res = await request(app)
-      .post(`/api/v1/purchase-orders/${po.id}/cancel`)
-      .set('Authorization', `Bearer ${APPROVER_TOKEN}`)
-      .send({ reason: 'Too late' });
-    expect(res.status).toBe(409);
-  });
 
-  it('returns 400 when reason is missing', async () => {
-    const po = poRepo.create({ branch_id: 1, supplier_id: 10, created_by_user_id: 1 });
     const res = await request(app)
-      .post(`/api/v1/purchase-orders/${po.id}/cancel`)
-      .set('Authorization', `Bearer ${BUYER_TOKEN}`)
-      .send({});
-    expect(res.status).toBe(400);
+      .get(`/api/v1/purchase-orders/${po.id}/fulfilment-history`)
+      .set('Authorization', `Bearer ${SUPPLIER_TOKEN}`);
+
+    expect(res.status).toBe(200);
   });
 });

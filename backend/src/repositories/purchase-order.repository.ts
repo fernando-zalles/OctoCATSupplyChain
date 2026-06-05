@@ -1,6 +1,6 @@
 import { Db } from '../db/database';
 
-export type POStatus = 'draft' | 'submitted' | 'approved' | 'fulfilled' | 'cancelled';
+export type POStatus = 'draft' | 'submitted' | 'approved' | 'partially-fulfilled' | 'fulfilled' | 'cancelled';
 
 export interface PurchaseOrder {
   id: number;
