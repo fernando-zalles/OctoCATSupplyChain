@@ -1,0 +1,633 @@
+openapi: 3.0.3
+info:
+  title: OctoCAT Supply Chain – Purchase Order API
+  version: 1.0.0
+  description: >
+    REST API for the Purchase Order management system. All endpoints require a
+    Bearer JWT in the Authorization header. Roles are extracted from JWT claims.
+
+servers:
+  - url: /api/v1
+
+tags:
+  - name: purchase-orders
+    description: Purchase Order lifecycle management
+  - name: line-items
+    description: PO line item management
+  - name: audit
+    description: PO audit trail
+
+paths:
+
+  # ─── Purchase Orders ────────────────────────────────────────────────────────
+
+  /purchase-orders:
+    get:
+      summary: List purchase orders
+      description: >
+        Returns POs visible to the authenticated user. Buyers see their branch's
+        POs. Approvers see all Submitted POs plus their branch POs. Suppliers
+        see POs addressed to them.
+      operationId: listPurchaseOrders
+      tags: [purchase-orders]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, submitted, approved, fulfilled, cancelled]
+          description: Filter by status
+        - name: supplierId
+          in: query
+          schema:
+            type: integer
+          description: Filter by supplier (approver/admin only)
+        - name: branchId
+          in: query
+          schema:
+            type: integer
+          description: Filter by branch (approver/admin only)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated list of purchase orders
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      summary: Create a new purchase order (Draft)
+      operationId: createPurchaseOrder
+      tags: [purchase-orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePurchaseOrderRequest'
+      responses:
+        '201':
+          description: Purchase order created in Draft status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /purchase-orders/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+
+    get:
+      summary: Get a single purchase order with line items
+      operationId: getPurchaseOrder
+      tags: [purchase-orders]
+      responses:
+        '200':
+          description: Purchase order detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      summary: Update a draft purchase order
+      description: Only permitted when the PO is in Draft status.
+      operationId: updatePurchaseOrder
+      tags: [purchase-orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePurchaseOrderRequest'
+      responses:
+        '200':
+          description: Updated purchase order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /purchase-orders/{id}/submit:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      summary: Submit a draft purchase order
+      description: >
+        Transitions the PO from Draft. If total < $10,000 → Approved (auto).
+        If total ≥ $10,000 → Submitted (pending approval).
+        Triggers supplier notification(s).
+      operationId: submitPurchaseOrder
+      tags: [purchase-orders]
+      responses:
+        '200':
+          description: PO submitted; returns updated PO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /purchase-orders/{id}/approve:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      summary: Approve a submitted purchase order
+      description: >
+        Approver role required. Self-approval forbidden — the approver must not
+        be the buyer who created the PO.
+      operationId: approvePurchaseOrder
+      tags: [purchase-orders]
+      responses:
+        '200':
+          description: PO approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /purchase-orders/{id}/reject:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      summary: Reject a submitted purchase order
+      description: >
+        Approver role required. Returns PO to Draft status. Buyer is notified.
+      operationId: rejectPurchaseOrder
+      tags: [purchase-orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReasonRequest'
+      responses:
+        '200':
+          description: PO rejected and returned to Draft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /purchase-orders/{id}/fulfil:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      summary: Mark an approved purchase order as fulfilled
+      description: Supplier role required.
+      operationId: fulfilPurchaseOrder
+      tags: [purchase-orders]
+      responses:
+        '200':
+          description: PO fulfilled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /purchase-orders/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      summary: Cancel a purchase order
+      description: >
+        Buyers may cancel their own Draft or Submitted POs.
+        Approvers may cancel any PO in Draft, Submitted, or Approved status.
+      operationId: cancelPurchaseOrder
+      tags: [purchase-orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReasonRequest'
+      responses:
+        '200':
+          description: PO cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ─── Line Items ─────────────────────────────────────────────────────────────
+
+  /purchase-orders/{id}/line-items:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+
+    post:
+      summary: Add a line item to a draft PO
+      operationId: addLineItem
+      tags: [line-items]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LineItemRequest'
+      responses:
+        '201':
+          description: Line item added; returns updated PO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /purchase-orders/{id}/line-items/{lineItemId}:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+      - name: lineItemId
+        in: path
+        required: true
+        schema:
+          type: integer
+
+    put:
+      summary: Update a line item on a draft PO
+      operationId: updateLineItem
+      tags: [line-items]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LineItemRequest'
+      responses:
+        '200':
+          description: Line item updated; returns updated PO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+    delete:
+      summary: Remove a line item from a draft PO
+      operationId: deleteLineItem
+      tags: [line-items]
+      responses:
+        '200':
+          description: Line item removed; returns updated PO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ─── Audit ──────────────────────────────────────────────────────────────────
+
+  /purchase-orders/{id}/audit:
+    parameters:
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    get:
+      summary: Get the audit trail for a purchase order
+      operationId: getPurchaseOrderAudit
+      tags: [audit]
+      responses:
+        '200':
+          description: Ordered list of audit entries (oldest first)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+
+  parameters:
+    PurchaseOrderId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Purchase order ID
+
+  schemas:
+
+    PurchaseOrderStatus:
+      type: string
+      enum: [draft, submitted, approved, fulfilled, cancelled]
+
+    LineItem:
+      type: object
+      required: [id, productId, quantity, unitPrice, lineTotal]
+      properties:
+        id:
+          type: integer
+        productId:
+          type: integer
+        productName:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        lineTotal:
+          type: number
+
+    PurchaseOrderSummary:
+      type: object
+      required: [id, branchId, supplierId, status, totalAmount, createdAt, createdByUserId]
+      properties:
+        id:
+          type: integer
+        branchId:
+          type: integer
+        branchName:
+          type: string
+        supplierId:
+          type: integer
+        supplierName:
+          type: string
+        status:
+          $ref: '#/components/schemas/PurchaseOrderStatus'
+        totalAmount:
+          type: number
+        createdByUserId:
+          type: integer
+        createdByUserName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        submittedAt:
+          type: string
+          format: date-time
+          nullable: true
+        approvedAt:
+          type: string
+          format: date-time
+          nullable: true
+        fulfilledAt:
+          type: string
+          format: date-time
+          nullable: true
+        cancelledAt:
+          type: string
+          format: date-time
+          nullable: true
+        cancellationReason:
+          type: string
+          nullable: true
+        rejectionReason:
+          type: string
+          nullable: true
+
+    PurchaseOrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/PurchaseOrderSummary'
+        - type: object
+          required: [lineItems]
+          properties:
+            lineItems:
+              type: array
+              items:
+                $ref: '#/components/schemas/LineItem'
+
+    PurchaseOrderListResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrderSummary'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    CreatePurchaseOrderRequest:
+      type: object
+      required: [supplierId]
+      properties:
+        supplierId:
+          type: integer
+
+    UpdatePurchaseOrderRequest:
+      type: object
+      properties:
+        supplierId:
+          type: integer
+
+    LineItemRequest:
+      type: object
+      required: [productId, quantity, unitPrice]
+      properties:
+        productId:
+          type: integer
+        quantity:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+
+    ReasonRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+
+    AuditEntry:
+      type: object
+      required: [id, purchaseOrderId, actorUserId, toStatus, createdAt]
+      properties:
+        id:
+          type: integer
+        purchaseOrderId:
+          type: integer
+        actorUserId:
+          type: integer
+        actorUserName:
+          type: string
+        fromStatus:
+          type: string
+          nullable: true
+          enum: [draft, submitted, approved, fulfilled, cancelled]
+        toStatus:
+          $ref: '#/components/schemas/PurchaseOrderStatus'
+        reason:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
+
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Insufficient role or ownership for this action
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Action not permitted in the current PO status
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - BearerAuth: []
